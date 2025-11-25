@@ -210,6 +210,7 @@ z_range = np.arange(-z_values/2,z_values/2+spacing,spacing)
 ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
 ele_sensors = np.empty((128))
 
+
 for i in range(128):
     ind_x = find_nearest(x_range,sensor_mask_pos[0][i])
     ind_y = find_nearest(y_range,sensor_mask_pos[1][i])

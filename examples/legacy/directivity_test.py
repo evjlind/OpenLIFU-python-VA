@@ -33,6 +33,10 @@ from kwave.ksource import kSource
 from kwave.kmedium import kWaveMedium
 from scipy import ndimage
 
+def find_nearest(array, value):
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return idx
 
 # medium parameters
 c_min               = 1500     # sound speed [m/s]
@@ -48,17 +52,8 @@ alpha_coeff_max     = 8.7      # [dB/(MHz cm)] Fry 1978 at 0.5MHz: 1 Np/cm (8.7 
 hu_min 	= 300
 hu_max 	= 2000	
 
-def find_nearest(array, value):
-    array = np.asarray(array)
-    idx = (np.abs(array - value)).argmin()
-    return idx
 
 # set focus
-simulate = True
-plot = True
-simulate2 = True
-use_ct_noise = False
-
 xInput = 0
 yInput = 0
 zInput = 35
@@ -92,9 +87,8 @@ simulation_options = SimulationOptions(
 target = Point(position=(xInput,yInput,zInput), units="mm")
 
 execution_options = SimulationExecutionOptions(is_gpu_simulation=True)
-spacing = 1
-# spacing = 0.125
-sim_setup = SimSetup(spacing=spacing, dt=2e-7, t_end=100e-6)
+spacing = 0.5
+sim_setup = SimSetup(spacing=spacing, dt=1e-8, t_end=10e-6)
 focal_pattern = focal_patterns.SinglePoint(target_pressure=300e3)
 apod_method = apod_methods.Uniform()
 delay_method = delay_methods.Direct()
@@ -131,6 +125,34 @@ medium = get_medium(params)
 sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
 source = get_source(kgrid, karray, source_mat)
 
+output = kspaceFirstOrder3D(kgrid=kgrid,
+                                source=source,
+                                sensor=sensor,
+                                medium=medium,
+                                simulation_options=simulation_options,
+                                execution_options=execution_options)
+
+sz = list(params.coords.sizes.values())
+p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+                        coords=params.coords,
+                        name='p_max',
+                        attrs={'units':'Pa', 'long_name':'PPP'})
+p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+                        coords=params.coords,
+                        name='p_min',
+                        attrs={'units':'Pa', 'long_name':'PNP'})
+Z = params['density'].data*params['sound_speed'].data
+intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+                        coords=params.coords,
+                        name='I',
+                        attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+
+plt.figure()
+plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+plt.title('initial pressure distribution')
+plt.colorbar()
+
 sensor_mask_pos = np.array([el.get_position(units='m') for el in arr.elements]).T*100
 
 xs, ys, zs = (sensor_mask_pos[0],sensor_mask_pos[1],sensor_mask_pos[2])
@@ -141,9 +163,176 @@ ax.scatter(sensor_mask_pos[0],sensor_mask_pos[1],sensor_mask_pos[2])
 ax.set_xlabel('x')
 ax.set_ylabel('y')
 
-print(xs)
+x_values = np.floor(kgrid.Nx*spacing)
+y_values = np.floor(kgrid.Ny*spacing)
+z_values = np.floor(kgrid.Nz*spacing)
+
+x_range = np.arange(-x_values/2,x_values/2+spacing,spacing)
+y_range = np.arange(-y_values/2,y_values/2+spacing,spacing)
+z_range = np.arange(-z_values/2,z_values/2+spacing,spacing)
+
+ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
+ele_sensors = np.empty((128))
+
+for i in range(128):
+    ind_x = find_nearest(x_range,sensor_mask_pos[0][i])
+    ind_y = find_nearest(y_range,sensor_mask_pos[1][i])
+    ind_z = find_nearest(z_range,sensor_mask_pos[2][i])
+    ele_bin[ind_x,ind_y,ind_z] = 1
+
+p0 = p_max.to_numpy()
+#fwhm
+p0[p0<np.max(p0)/2]=0
+sensor2 = kSensor(record=['p'])
+sensor2.mask = ele_bin
+
+source2 = kSource()
+source2.p0 = p0
+kgrid2 = get_kgrid(coords)
+medium2 = get_medium(params)
+
+
+sensor_data = kspaceFirstOrder3D(
+    kgrid=kgrid2,
+    source=source2,
+    sensor=sensor2,
+    medium=medium2,
+    simulation_options=simulation_options,
+    execution_options=execution_options
+)
+
+plt.figure(figsize=(10, 6))
+plt.imshow(sensor_data['p'].T, aspect='auto', extent=[
+    0, kgrid.Nt * kgrid.dt * 1e6,  # Time in μs
+    0, sensor_data['p'].shape[1]  # Sensor number
+])
+plt.xlabel('Time (μs)')
+plt.ylabel('Sensor Number')
+plt.title('Recorded Pressure at Boundary Sensors')
+plt.colorbar(label='Pressure (Pa)')
+
+delays_tr = np.zeros_like(delays)
+for i in range(len(sensor_data['p'].T)):
+    amp, phase, freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+    delays_tr[i]=phase/freq/(2*np.pi)
+
+delays_tr = delays_tr+abs(min(delays_tr))
+print(delays_tr)
+
+source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
+karray = get_karray(arr,
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
+
+medium = get_medium(params)
+sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+source = get_source(kgrid, karray, source_mat)
+
+output = kspaceFirstOrder3D(kgrid=kgrid,
+                                source=source,
+                                sensor=sensor,
+                                medium=medium,
+                                simulation_options=simulation_options,
+                                execution_options=execution_options)
+
+sz = list(params.coords.sizes.values())
+p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+                        coords=params.coords,
+                        name='p_max',
+                        attrs={'units':'Pa', 'long_name':'PPP'})
+p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+                        coords=params.coords,
+                        name='p_min',
+                        attrs={'units':'Pa', 'long_name':'PNP'})
+Z = params['density'].data*params['sound_speed'].data
+intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+                        coords=params.coords,
+                        name='I',
+                        attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+plt.figure()
+plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+plt.title('forward sim with TR delays')
+plt.colorbar()
+
 angles = np.zeros_like(xs)
 angles[np.where(xs>0)] = -np.pi/4
 angles[np.where(xs<0)] = np.pi/4
-print(angles)
+
+sensor3 = kSensor(record=['p'])
+
+sensor3.mask = ele_bin
+sensor3.directivity = angles
+source3 = kSource()
+source3.p0 = p0
+kgrid3 = get_kgrid(coords)
+medium3 = get_medium(params)
+
+
+sensor_data = kspaceFirstOrder3D(
+    kgrid=kgrid2,
+    source=source2,
+    sensor=sensor2,
+    medium=medium2,
+    simulation_options=simulation_options,
+    execution_options=execution_options
+)
+
+plt.figure(figsize=(10, 6))
+plt.imshow(sensor_data['p'].T, aspect='auto', extent=[
+    0, kgrid.Nt * kgrid.dt * 1e6,  # Time in μs
+    0, sensor_data['p'].shape[1]  # Sensor number
+])
+plt.xlabel('Time (μs)')
+plt.ylabel('Sensor Number')
+plt.title('Recorded Pressure at Boundary Sensors')
+plt.colorbar(label='Pressure (Pa)')
+
+delays_tr = np.zeros_like(delays)
+for i in range(len(sensor_data['p'].T)):
+    amp, phase, freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+    delays_tr[i]=phase/freq/(2*np.pi)
+
+delays_tr = delays_tr+abs(min(delays_tr))
+print(delays_tr)
+
+
+source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
+karray = get_karray(arr,
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
+
+medium = get_medium(params)
+sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+source = get_source(kgrid, karray, source_mat)
+
+output = kspaceFirstOrder3D(kgrid=kgrid,
+                                source=source,
+                                sensor=sensor,
+                                medium=medium,
+                                simulation_options=simulation_options,
+                                execution_options=execution_options)
+
+sz = list(params.coords.sizes.values())
+p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+                        coords=params.coords,
+                        name='p_max',
+                        attrs={'units':'Pa', 'long_name':'PPP'})
+p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+                        coords=params.coords,
+                        name='p_min',
+                        attrs={'units':'Pa', 'long_name':'PNP'})
+Z = params['density'].data*params['sound_speed'].data
+intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+                        coords=params.coords,
+                        name='I',
+                        attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+plt.figure()
+plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+plt.title('forward sim with TR delays and directivity')
+plt.colorbar()
+
 plt.show()
