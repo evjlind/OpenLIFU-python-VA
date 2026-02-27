@@ -35,12 +35,12 @@ from scipy import ndimage
 
 
 # medium parameters
-c_min               = 1500     # sound speed [m/s]
+c_min               = 1540     # sound speed [m/s]
 c_max               = 3100     # max. speed of sound in skull (F. A. Duck, 2013.) [m/s]
 rho_min             = 1000     # density [kg/m^3]
 rho_max             = 1900     # max. skull density [kg/m3]
 # alpha_power         = 1.43     # Robertson et al., PMB 2017 usually between 1 and 3? from Treeby paper
-alpha_power = 0.9
+alpha_power = 1.1
 alpha_coeff_water   = 0        # [dB/(MHz^y cm)] close to 0 (Mueller et al., 2017), see also 0.05 Fomenko et al., 2020?
 alpha_coeff_min     = 4     
 alpha_coeff_max     = 8.7      # [dB/(MHz cm)] Fry 1978 at 0.5MHz: 1 Np/cm (8.7 dB/cm) for both diploe and outer tables
@@ -109,6 +109,7 @@ db_path = here / ".." / "OpenLIFU_Database_DCVA"
 
 db = Database(db_path)
 arr = db.load_transducer(f"openlifu_{num_modules}x400_evt1_002")
+arr.sort_by_pin()
 
 simulation_options = SimulationOptions(
                         pml_auto=True,
@@ -120,9 +121,9 @@ simulation_options = SimulationOptions(
 target = Point(position=(xInput,yInput,zInput), units="mm")
 
 execution_options = SimulationExecutionOptions(is_gpu_simulation=True)
-# spacing = 1
-spacing = 0.125
-sim_setup = SimSetup(spacing=spacing, dt=2e-7, t_end=100e-6)
+spacing = 0.25
+# spacing = 0.125
+sim_setup = SimSetup(spacing=spacing, dt=2e-8, t_end=100e-6)
 focal_pattern = focal_patterns.SinglePoint(target_pressure=300e3)
 apod_method = apod_methods.Uniform()
 delay_method = delay_methods.Direct()
@@ -159,6 +160,33 @@ medium = get_medium(params)
 sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
 source = get_source(kgrid, karray, source_mat)
 
+
+# ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
+# x_val = np.floor(kgrid.Nx*kgrid.dx)
+# y_val = np.floor(kgrid.Ny*kgrid.dx)
+# z_val = np.floor(kgrid.Nz*kgrid.dx)
+
+# x_range = np.arange(-x_val/2,x_val/2+kgrid.dx,kgrid.dx)
+# y_range = np.arange(-y_val/2,y_val/2+kgrid.dx,kgrid.dx)
+# z_range = np.arange(-z_val/2,z_val/2+kgrid.dx,kgrid.dx)
+
+# for el in arr.elements:
+#     ele_pos = list(el.get_position(units="m"))
+#     print(ele_pos)
+#     ix = round(ele_pos[0]/kgrid.dx)
+#     iy = round(ele_pos[1]/kgrid.dx)
+#     iz = round(ele_pos[2]/kgrid.dx)
+#     print((ix,iy,iz))
+#     ix = max(0,min(kgrid.Nx,ix))
+#     iy = max(0,min(kgrid.Ny,iy))
+#     iz = max(0,min(kgrid.Nz,iz))
+#     print((ix,iy,iz))
+#     ele_bin[ix][iy][iz] = 1
+
+sensor_mask_pos = np.array([el.get_position(units='m') for el in arr.elements]).T*100
+
+ele_bin = karray.get_array_binary_mask(kgrid)
+
 if simulate:
     output = kspaceFirstOrder3D(kgrid=kgrid,
                                     source=source,
@@ -185,10 +213,10 @@ if simulate:
     if plot == True:
         plt.figure()
         plt.imshow(p_max[:,round(kgrid.Ny/2),:])
-        plt.title('initial pressure distribution')
+        plt.title('forward sim')
         plt.colorbar()
 
-sensor_mask_pos = np.array([el.get_position(units='m') for el in arr.elements]).T*100
+
 
 if plot:
     xs, ys, zs = (sensor_mask_pos[0],sensor_mask_pos[1],sensor_mask_pos[2])
@@ -199,33 +227,26 @@ if plot:
     ax.set_xlabel('x')
     ax.set_ylabel('y')
 
-x_values = np.floor(kgrid.Nx*spacing)
-y_values = np.floor(kgrid.Ny*spacing)
-z_values = np.floor(kgrid.Nz*spacing)
 
-x_range = np.arange(-x_values/2,x_values/2+spacing,spacing)
-y_range = np.arange(-y_values/2,y_values/2+spacing,spacing)
-z_range = np.arange(-z_values/2,z_values/2+spacing,spacing)
-
-ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
-ele_sensors = np.empty((128))
-
-
-for i in range(128):
-    ind_x = find_nearest(x_range,sensor_mask_pos[0][i])
-    ind_y = find_nearest(y_range,sensor_mask_pos[1][i])
-    ind_z = find_nearest(z_range,sensor_mask_pos[2][i])
-    ele_bin[ind_x,ind_y,ind_z] = 1
 
 
 if simulate2:
     # p_max_np = p_max.to_numpy()
     # p0 = np.zeros_like(p_max_np)
     # p0[round(kgrid.Nx/2)-7:round(kgrid.Nx/2)+7,round(kgrid.Ny/2)-7:round(kgrid.Ny/2)+7,zInput-15:zInput+15] = p_max_np[round(kgrid.Nx/2)-7:round(kgrid.Nx/2)+7,round(kgrid.Ny/2)-7:round(kgrid.Ny/2)+7,zInput-15:zInput+15]
+    
     p0 = p_max.to_numpy()
+    db_cutoff = p0.max()/2
+    p0[p0<db_cutoff] = 0
+    if plot:
+        plt.figure()
+        plt.imshow(p0[:,round(kgrid.Ny/2),:])
+        plt.title('initial pressure distribution (reverse)')
+        plt.colorbar()
     sensor2 = kSensor(record=['p'])
     sensor2.mask = ele_bin
-    # sensor2.mask = karray.get_array_binary_mask(kgrid)
+    # sensor2.mask = karray
+    # sensor2.mask = karray.get_array_binary_mask(karray)
     source2 = kSource()
     source2.p0 = p0
     kgrid2 = get_kgrid(coords)
@@ -276,9 +297,9 @@ delays_tr = np.zeros_like(delays)
 for i in range(128):
     # print(f'element #{i}')
     if use_ct_noise:
-        amp, phase, freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+        amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
     else:
-        amp, phase, freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+        amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
     delays_tr[i]=phase/freq/(2*np.pi)
 
 delays_tr = delays_tr+abs(min(delays_tr))
@@ -298,7 +319,6 @@ karray = get_karray(arr,
 medium = get_medium(params)
 sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
 source = get_source(kgrid, karray, source_mat)
-medium2 = kWaveMedium(sound_speed=cmap,density=dmap,alpha_coeff=amap,alpha_power=alpha_power,alpha_mode='no_dispersion')
 
 if simulate:
     output = kspaceFirstOrder3D(kgrid=kgrid,

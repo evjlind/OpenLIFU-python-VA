@@ -35,7 +35,7 @@ if not logger.hasHandlers():
 log_interval = 1  # seconds; you can adjust this variable as needed
 
 # set focus
-xInput = 20
+xInput = 0
 yInput = 0
 zInput = 80
 
@@ -77,9 +77,6 @@ sequence = Sequence(
 focal_pattern = focal_patterns.SinglePoint(target_pressure=300e3)
 apod_method = apod_methods.Uniform()
 delay_method = delay_methods.Direct()
-# delay_method = delay_methods.TimeReversal()
-# apod_method = apod_methods.MaxAngle()
-# apod_method = apod_methods.PiecewiseLinear()
 sim_setup = SimSetup(x_extent=(-55,55), y_extent=(-30,30), z_extent=(-4,150))
 protocol = Protocol(
     id='test_protocol',
