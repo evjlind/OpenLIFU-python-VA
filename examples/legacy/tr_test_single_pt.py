@@ -238,6 +238,7 @@ if simulate2:
         plt.colorbar(label='Pressure (Pa)')
 
 delays_tr = np.zeros_like(delays)
+
 for i in range(128):
     if use_ct_noise:
         amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)

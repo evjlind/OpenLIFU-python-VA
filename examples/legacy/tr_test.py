@@ -227,9 +227,6 @@ if plot:
     ax.set_xlabel('x')
     ax.set_ylabel('y')
 
-
-
-
 if simulate2:
     # p_max_np = p_max.to_numpy()
     # p0 = np.zeros_like(p_max_np)
@@ -292,10 +289,10 @@ if simulate2:
         plt.ylabel('Sensor Number')
         plt.title('Recorded Pressure at Boundary Sensors')
         plt.colorbar(label='Pressure (Pa)')
+        ## For some reason there are ~60k sensors being recorded instead of 128
 
 delays_tr = np.zeros_like(delays)
 for i in range(128):
-    # print(f'element #{i}')
     if use_ct_noise:
         amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
     else:
