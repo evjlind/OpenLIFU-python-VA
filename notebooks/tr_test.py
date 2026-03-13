@@ -150,7 +150,7 @@ units = [params[dim].attrs['units'] for dim in params.dims]
 scl = getunitconversion(units[0], 'm')
 array_offset =[-float(coord.mean())*scl for coord in params.coords.values()]
 bli_tolerance = 0.05
-upsampling_rate = 1
+upsampling_rate = 5
 karray = get_karray(arr,
                     translation=array_offset,
                     bli_tolerance=bli_tolerance,
@@ -160,32 +160,38 @@ medium = get_medium(params)
 sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
 source = get_source(kgrid, karray, source_mat)
 
+ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
+x_val = np.floor(kgrid.Nx*kgrid.dx*1e3)
+y_val = np.floor(kgrid.Ny*kgrid.dy*1e3)
+z_val = np.floor(kgrid.Nz*kgrid.dz*1e3)
 
-# ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
-# x_val = np.floor(kgrid.Nx*kgrid.dx)
-# y_val = np.floor(kgrid.Ny*kgrid.dx)
-# z_val = np.floor(kgrid.Nz*kgrid.dx)
+x_range = np.arange(-x_val/2,x_val/2+kgrid.dx,kgrid.dx)
+y_range = np.arange(-y_val/2,y_val/2+kgrid.dx,kgrid.dx)
+z_range = np.arange(-z_val/2,z_val/2+kgrid.dx,kgrid.dx)
 
-# x_range = np.arange(-x_val/2,x_val/2+kgrid.dx,kgrid.dx)
-# y_range = np.arange(-y_val/2,y_val/2+kgrid.dx,kgrid.dx)
-# z_range = np.arange(-z_val/2,z_val/2+kgrid.dx,kgrid.dx)
 
-# for el in arr.elements:
-#     ele_pos = list(el.get_position(units="m"))
-#     print(ele_pos)
-#     ix = round(ele_pos[0]/kgrid.dx)
-#     iy = round(ele_pos[1]/kgrid.dx)
-#     iz = round(ele_pos[2]/kgrid.dx)
-#     print((ix,iy,iz))
-#     ix = max(0,min(kgrid.Nx,ix))
-#     iy = max(0,min(kgrid.Ny,iy))
-#     iz = max(0,min(kgrid.Nz,iz))
-#     print((ix,iy,iz))
-#     ele_bin[ix][iy][iz] = 1
+el_list = karray.get_element_positions()
+least_x = min(el_list[0])
+least_y = min(el_list[1])
+least_z = min(el_list[2])
 
-sensor_mask_pos = np.array([el.get_position(units='m') for el in arr.elements]).T*100
+for ind in range(len(el_list[0])):
+# for el in karray.get_element_positions():
+    # ele_pos = list(el.get_position(units="m"))
+    ele_pos = [el_list[0][ind],el_list[1][ind],el_list[2][ind]]
+    ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
+    iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
+    iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
+    print(ele_pos)
+    print((ix,iy,iz))
+    ix = max(0,min(kgrid.Nx-1,ix))
+    iy = max(0,min(kgrid.Ny-1,iy))
+    iz = max(0,min(kgrid.Nz-1,iz))
+    ele_bin[ix][iy][iz] = 1
 
-ele_bin = karray.get_array_binary_mask(kgrid)
+print(np.count_nonzero(ele_bin))
+# ele_bin = karray.get_element_binary_mask()
+# ele_bin = karray.get_array_binary_mask(kgrid)
 
 if simulate:
     output = kspaceFirstOrder3D(kgrid=kgrid,
@@ -216,7 +222,7 @@ if simulate:
         plt.title('forward sim')
         plt.colorbar()
 
-
+sensor_mask_pos = np.array([el.get_position(units='m') for el in arr.elements]).T*100
 
 if plot:
     xs, ys, zs = (sensor_mask_pos[0],sensor_mask_pos[1],sensor_mask_pos[2])
@@ -292,15 +298,16 @@ if simulate2:
         ## For some reason there are ~60k sensors being recorded instead of 128
 
 delays_tr = np.zeros_like(delays)
-for i in range(128):
-    if use_ct_noise:
-        amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
-    else:
-        amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
-    delays_tr[i]=phase/freq/(2*np.pi)
+if simulate2:
+    for i in range(128):
+        if use_ct_noise:
+            amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+        else:
+            amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+        delays_tr[i]=phase/freq/(2*np.pi)
 
-delays_tr = delays_tr+abs(min(delays_tr))
-print(delays_tr)
+    delays_tr = delays_tr+abs(min(delays_tr))
+    print(delays_tr)
 
 # print(phase)
 # plt.figure()
