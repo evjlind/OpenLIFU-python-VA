@@ -140,6 +140,7 @@ kgrid = get_kgrid(coords)
 
 delays, apod = protocol.beamform(arr=arr, target=pts[0], params=params)
 
+
 amplitude = 1
 cycles = 20
 t = np.arange(0, cycles / freq, kgrid.dt)
@@ -150,7 +151,7 @@ units = [params[dim].attrs['units'] for dim in params.dims]
 scl = getunitconversion(units[0], 'm')
 array_offset =[-float(coord.mean())*scl for coord in params.coords.values()]
 bli_tolerance = 0.05
-upsampling_rate = 5
+upsampling_rate = 1
 karray = get_karray(arr,
                     translation=array_offset,
                     bli_tolerance=bli_tolerance,
@@ -160,15 +161,7 @@ medium = get_medium(params)
 sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
 source = get_source(kgrid, karray, source_mat)
 
-ele_bin = np.zeros([kgrid.Nx,kgrid.Ny,kgrid.Nz])
-x_val = np.floor(kgrid.Nx*kgrid.dx*1e3)
-y_val = np.floor(kgrid.Ny*kgrid.dy*1e3)
-z_val = np.floor(kgrid.Nz*kgrid.dz*1e3)
-
-x_range = np.arange(-x_val/2,x_val/2+kgrid.dx,kgrid.dx)
-y_range = np.arange(-y_val/2,y_val/2+kgrid.dx,kgrid.dx)
-z_range = np.arange(-z_val/2,z_val/2+kgrid.dx,kgrid.dx)
-
+ele_bin = np.zeros([375,375,315])
 
 el_list = karray.get_element_positions()
 least_x = min(el_list[0])
@@ -182,14 +175,11 @@ for ind in range(len(el_list[0])):
     ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
     iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
     iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
-    print(ele_pos)
-    print((ix,iy,iz))
-    ix = max(0,min(kgrid.Nx-1,ix))
-    iy = max(0,min(kgrid.Ny-1,iy))
-    iz = max(0,min(kgrid.Nz-1,iz))
+    ix = max(0,min(374,ix))
+    iy = max(0,min(374,iy))
+    iz = max(0,min(314,iz))
     ele_bin[ix][iy][iz] = 1
 
-print(np.count_nonzero(ele_bin))
 # ele_bin = karray.get_element_binary_mask()
 # ele_bin = karray.get_array_binary_mask(kgrid)
 
@@ -233,11 +223,19 @@ if plot:
     ax.set_xlabel('x')
     ax.set_ylabel('y')
 
+    loc_sens = np.nonzero(ele_bin)
+    xs, ys, zs = (loc_sens[0],loc_sens[1],loc_sens[2])
+    fig = plt.figure(figsize=(12, 12))
+    ax = fig.add_subplot(projection='3d')
+    ax.set_box_aspect((np.ptp(xs), np.ptp(ys), np.ptp(zs))) 
+    ax.scatter(loc_sens[0],loc_sens[1],loc_sens[2])
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+
 if simulate2:
     # p_max_np = p_max.to_numpy()
     # p0 = np.zeros_like(p_max_np)
     # p0[round(kgrid.Nx/2)-7:round(kgrid.Nx/2)+7,round(kgrid.Ny/2)-7:round(kgrid.Ny/2)+7,zInput-15:zInput+15] = p_max_np[round(kgrid.Nx/2)-7:round(kgrid.Nx/2)+7,round(kgrid.Ny/2)-7:round(kgrid.Ny/2)+7,zInput-15:zInput+15]
-    
     p0 = p_max.to_numpy()
     db_cutoff = p0.max()/2
     p0[p0<db_cutoff] = 0
@@ -307,12 +305,10 @@ if simulate2:
         delays_tr[i]=phase/freq/(2*np.pi)
 
     delays_tr = delays_tr+abs(min(delays_tr))
+    print('reverse sim delays')
     print(delays_tr)
-
-# print(phase)
-# plt.figure()
-# plt.plot(phase)
-# plt.show()
+    print('original delays')
+    print(delays)
 
 source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
 karray = get_karray(arr,
