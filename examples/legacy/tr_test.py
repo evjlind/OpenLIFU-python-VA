@@ -168,10 +168,15 @@ least_x = min(el_list[0])
 least_y = min(el_list[1])
 least_z = min(el_list[2])
 
+ele_ordering = np.zeros_like(ele_bin)
+fig = plt.figure(figsize=(12,12))
+ax = fig.add_subplot(projection='3d')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('z')
 for ind in range(len(el_list[0])):
-# for el in karray.get_element_positions():
-    # ele_pos = list(el.get_position(units="m"))
     ele_pos = [el_list[0][ind],el_list[1][ind],el_list[2][ind]]
+    print(ele_pos)
     ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
     iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
     iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
@@ -179,9 +184,22 @@ for ind in range(len(el_list[0])):
     iy = max(0,min(374,iy))
     iz = max(0,min(314,iz))
     ele_bin[ix][iy][iz] = 1
+    ele_ordering[ix][iy][iz] = ind
 
-# ele_bin = karray.get_element_binary_mask()
-# ele_bin = karray.get_array_binary_mask(kgrid)
+    if plot:
+        ax.scatter(ix,iy,iz)
+        ax.text(ix,iy,iz,'{}'.format(ind+1))
+    
+    # xs, ys, zs = (loc_sens[0],loc_sens[1],loc_sens[2])
+    # fig = plt.figure(figsize=(12, 12))
+    # ax = fig.add_subplot(projection='3d')
+    # ax.set_box_aspect((np.ptp(xs), np.ptp(ys), np.ptp(zs)))
+    # for i in range(len(loc_sens)):
+    #     ax.scatter(loc_sens[0,i],loc_sens[1,i],loc_sens[2,i])
+    #     ax.text(loc_sens[0,i],loc_sens[1,i],loc_sens[2,i],'{}'.format(str(i+1)))
+
+
+
 
 if simulate:
     output = kspaceFirstOrder3D(kgrid=kgrid,
@@ -223,19 +241,11 @@ if plot:
     ax.set_xlabel('x')
     ax.set_ylabel('y')
 
-    loc_sens = np.nonzero(ele_bin)
-    xs, ys, zs = (loc_sens[0],loc_sens[1],loc_sens[2])
-    fig = plt.figure(figsize=(12, 12))
-    ax = fig.add_subplot(projection='3d')
-    ax.set_box_aspect((np.ptp(xs), np.ptp(ys), np.ptp(zs))) 
-    ax.scatter(loc_sens[0],loc_sens[1],loc_sens[2])
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
+
+    # for i in range(0,128):
+    #     ax.text(loc_sens[0][i],loc_sens[1][[i]],loc_sens[2][i],'{}'.format(i+1),size=20,zorder=1,color='k')
 
 if simulate2:
-    # p_max_np = p_max.to_numpy()
-    # p0 = np.zeros_like(p_max_np)
-    # p0[round(kgrid.Nx/2)-7:round(kgrid.Nx/2)+7,round(kgrid.Ny/2)-7:round(kgrid.Ny/2)+7,zInput-15:zInput+15] = p_max_np[round(kgrid.Nx/2)-7:round(kgrid.Nx/2)+7,round(kgrid.Ny/2)-7:round(kgrid.Ny/2)+7,zInput-15:zInput+15]
     p0 = p_max.to_numpy()
     db_cutoff = p0.max()/2
     p0[p0<db_cutoff] = 0
@@ -246,18 +256,16 @@ if simulate2:
         plt.colorbar()
     sensor2 = kSensor(record=['p'])
     sensor2.mask = ele_bin
-    # sensor2.mask = karray
-    # sensor2.mask = karray.get_array_binary_mask(karray)
     source2 = kSource()
     source2.p0 = p0
     kgrid2 = get_kgrid(coords)
     if use_ct_noise:
         ct_noise = generate_ct_noise(kgrid2)
-        # if plot:
-        #     plt.figure()
-        #     plt.imshow(ct_noise[:,round(kgrid.Ny/2),:])
-        #     plt.title('noisegen')
-        #     plt.colorbar()
+        if plot:
+            plt.figure()
+            plt.imshow(ct_noise[:,round(kgrid.Ny/2),:])
+            plt.title('noisegen')
+            plt.colorbar()
         model = np.zeros_like(ct_noise)
         model[:,:,zInput-5:zInput-3] = ct_noise[:,:,zInput-5:zInput-3]
         dmap = rho_min + (rho_max-rho_min)*(model-0)/(hu_max-0)
@@ -296,13 +304,20 @@ if simulate2:
         ## For some reason there are ~60k sensors being recorded instead of 128
 
 delays_tr = np.zeros_like(delays)
+order = []
+for v in range(1,9):
+    p = (v-1)*8+1
+    q = 120-(v-1)*8+1
+    order.append([p,q,p+1,q+1,p+2,q+2,p+3,q+3,p+4,q+4,p+5,q+5,p+6,q+6,p+7,q+7])
+order = np.array(order).flatten()
+
 if simulate2:
     for i in range(128):
         if use_ct_noise:
             amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
         else:
             amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
-        delays_tr[i]=phase/freq/(2*np.pi)
+        delays_tr[order[i]-1]=phase/freq/(2*np.pi)
 
     delays_tr = delays_tr+abs(min(delays_tr))
     print('reverse sim delays')
@@ -310,17 +325,19 @@ if simulate2:
     print('original delays')
     print(delays)
 
-source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
-karray = get_karray(arr,
-                    translation=array_offset,
-                    bli_tolerance=bli_tolerance,
-                    upsampling_rate=upsampling_rate)
 
-medium = get_medium(params)
-sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
-source = get_source(kgrid, karray, source_mat)
 
-if simulate:
+if simulate and simulate2:
+
+    source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
+    karray = get_karray(arr,
+                        translation=array_offset,
+                        bli_tolerance=bli_tolerance,
+                        upsampling_rate=upsampling_rate)
+
+    medium = get_medium(params)
+    sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+    source = get_source(kgrid, karray, source_mat)
     output = kspaceFirstOrder3D(kgrid=kgrid,
                                     source=source,
                                     sensor=sensor,
@@ -349,16 +366,17 @@ if simulate:
         plt.title('forward sim with TR delays')
         plt.colorbar()
         
-source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
-karray = get_karray(arr,
-                    translation=array_offset,
-                    bli_tolerance=bli_tolerance,
-                    upsampling_rate=upsampling_rate)
 
-sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
-source = get_source(kgrid, karray, source_mat)
 
-if simulate and use_ct_noise:
+if simulate and simulate2 and use_ct_noise:
+    source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
+    karray = get_karray(arr,
+                        translation=array_offset,
+                        bli_tolerance=bli_tolerance,
+                        upsampling_rate=upsampling_rate)
+
+    sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+    source = get_source(kgrid, karray, source_mat)
     output = kspaceFirstOrder3D(kgrid=kgrid,
                                     source=source,
                                     sensor=sensor,
