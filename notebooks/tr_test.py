@@ -176,7 +176,6 @@ ax.set_ylabel('y')
 ax.set_zlabel('z')
 for ind in range(len(el_list[0])):
     ele_pos = [el_list[0][ind],el_list[1][ind],el_list[2][ind]]
-    print(ele_pos)
     ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
     iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
     iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
@@ -189,17 +188,6 @@ for ind in range(len(el_list[0])):
     if plot:
         ax.scatter(ix,iy,iz)
         ax.text(ix,iy,iz,'{}'.format(ind+1))
-    
-    # xs, ys, zs = (loc_sens[0],loc_sens[1],loc_sens[2])
-    # fig = plt.figure(figsize=(12, 12))
-    # ax = fig.add_subplot(projection='3d')
-    # ax.set_box_aspect((np.ptp(xs), np.ptp(ys), np.ptp(zs)))
-    # for i in range(len(loc_sens)):
-    #     ax.scatter(loc_sens[0,i],loc_sens[1,i],loc_sens[2,i])
-    #     ax.text(loc_sens[0,i],loc_sens[1,i],loc_sens[2,i],'{}'.format(str(i+1)))
-
-
-
 
 if simulate:
     output = kspaceFirstOrder3D(kgrid=kgrid,
@@ -240,10 +228,6 @@ if plot:
     ax.scatter(sensor_mask_pos[0],sensor_mask_pos[1],sensor_mask_pos[2])
     ax.set_xlabel('x')
     ax.set_ylabel('y')
-
-
-    # for i in range(0,128):
-    #     ax.text(loc_sens[0][i],loc_sens[1][[i]],loc_sens[2][i],'{}'.format(i+1),size=20,zorder=1,color='k')
 
 if simulate2:
     p0 = p_max.to_numpy()
@@ -301,34 +285,33 @@ if simulate2:
         plt.ylabel('Sensor Number')
         plt.title('Recorded Pressure at Boundary Sensors')
         plt.colorbar(label='Pressure (Pa)')
-        ## For some reason there are ~60k sensors being recorded instead of 128
 
 delays_tr = np.zeros_like(delays)
+first_val = np.zeros_like(delays)
 order = []
 for v in range(1,9):
-    p = (v-1)*8+1
-    q = 120-(v-1)*8+1
+    p = (v-1)*8
+    q = 120-(v-1)*8
     order.append([p,q,p+1,q+1,p+2,q+2,p+3,q+3,p+4,q+4,p+5,q+5,p+6,q+6,p+7,q+7])
 order = np.array(order).flatten()
 
 if simulate2:
     for i in range(128):
-        if use_ct_noise:
-            amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
-        else:
-            amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
-        delays_tr[order[i]-1]=phase/freq/(2*np.pi)
-
-    delays_tr = delays_tr+abs(min(delays_tr))
+        amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
+        delays_tr[order[i]]=phase/freq/(2*np.pi)
+        first_val_p = abs(sensor_data['p'].T)[i] - min(abs(sensor_data['p'].T[i]))
+        first_val[order[i]]=np.where(first_val_p>np.mean(first_val_p))[0][0]*kgrid.dt
+    # first_val = first_val-min(first_val)
+    # delays_tr = delays_tr-min(delays_tr)
+    ## somehow no zero delays even though the minimums are subtracted
     print('reverse sim delays')
     print(delays_tr)
+    print('reverse sim first value')
+    print(first_val)
     print('original delays')
     print(delays)
 
-
-
 if simulate and simulate2:
-
     source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
     karray = get_karray(arr,
                         translation=array_offset,
@@ -366,7 +349,43 @@ if simulate and simulate2:
         plt.title('forward sim with TR delays')
         plt.colorbar()
         
+if simulate and simulate2:
+    source_mat = arr.calc_output(input_signal, kgrid.dt, first_val, apod)
+    karray = get_karray(arr,
+                        translation=array_offset,
+                        bli_tolerance=bli_tolerance,
+                        upsampling_rate=upsampling_rate)
 
+    medium = get_medium(params)
+    sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+    source = get_source(kgrid, karray, source_mat)
+    output = kspaceFirstOrder3D(kgrid=kgrid,
+                                    source=source,
+                                    sensor=sensor,
+                                    medium=medium,
+                                    simulation_options=simulation_options,
+                                    execution_options=execution_options)
+
+    sz = list(params.coords.sizes.values())
+    p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+                            coords=params.coords,
+                            name='p_max',
+                            attrs={'units':'Pa', 'long_name':'PPP'})
+    p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+                            coords=params.coords,
+                            name='p_min',
+                            attrs={'units':'Pa', 'long_name':'PNP'})
+    Z = params['density'].data*params['sound_speed'].data
+    intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+                            coords=params.coords,
+                            name='I',
+                            attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+    ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+    if plot == True:
+        plt.figure()
+        plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+        plt.title('forward sim with first non 0 delays')
+        plt.colorbar()
 
 if simulate and simulate2 and use_ct_noise:
     source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
