@@ -305,9 +305,7 @@ if simulate2:
         delays_tr[order[i]]=phase/freq/(2*np.pi)
         first_val_p = abs(sensor_data['p'].T)[i] - min(abs(sensor_data['p'].T[i]))
         first_val[order[i]]=np.where(first_val_p>np.mean(first_val_p))[0][0]*kgrid.dt
-    # first_val = first_val-min(first_val)
-    # delays_tr = delays_tr-min(delays_tr)
-    ## no zero delays even though the minimums are subtracted
+    delays_tr = max(delays_tr) - delays_tr
     print('reverse sim delays')
     print(delays_tr)
     print('reverse sim first value')

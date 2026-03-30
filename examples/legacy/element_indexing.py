@@ -1,37 +1,78 @@
 from __future__ import annotations
+
+import logging
 import os
+import sys
+import threading
+import time
 from pathlib import Path
+
 if os.name == 'nt':
     import msvcrt
 else:
     import select
+
 from matplotlib import pyplot as plt
+from openlifu.bf import apod_methods, focal_patterns, delay_methods
+from openlifu.bf.pulse import Pulse
+from openlifu.bf.sequence import Sequence
 from openlifu.db import Database
+from openlifu.geo import Point
+from openlifu.plan import Protocol
+from openlifu.sim import SimSetup
+from openlifu.sim.kwave_if import get_karray, get_medium, get_source, get_sensor, get_kgrid
+from kwave.utils.filters import extract_amp_phase
+from kwave.kspaceFirstOrder3D import kspaceFirstOrder3D
+from kwave.options.simulation_execution_options import SimulationExecutionOptions
+from kwave.options.simulation_options import SimulationOptions
 import numpy as np
+import xarray as xa
+from openlifu.util.units import getunitconversion
+from kwave.ksensor import kSensor
+from kwave.ksource import kSource
+from kwave.kmedium import kWaveMedium
 from scipy import ndimage
 from matplotlib import colormaps
 
-# medium parameters
+def find_nearest(array, value):
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return idx
 
+# medium parameters
+c_min               = 1500     # sound speed [m/s]
+c_max               = 3100     # max. speed of sound in skull (F. A. Duck, 2013.) [m/s]
+rho_min             = 1000     # density [kg/m^3]
+rho_max             = 1900     # max. skull density [kg/m3]
 # alpha_power         = 1.43     # Robertson et al., PMB 2017 usually between 1 and 3? from Treeby paper
-alpha_power = 1.1
-alpha_coeff_water   = 0.001        # [dB/(MHz^y cm)] close to 0 (Mueller et al., 2017), see also 0.05 Fomenko et al., 2020?
+alpha_power = 0.9
+alpha_coeff_water   = 0        # [dB/(MHz^y cm)] close to 0 (Mueller et al., 2017), see also 0.05 Fomenko et al., 2020?
 alpha_coeff_min     = 4     
 alpha_coeff_max     = 8.7      # [dB/(MHz cm)] Fry 1978 at 0.5MHz: 1 Np/cm (8.7 dB/cm) for both diploe and outer tables
 
-# set focus
-simulate = True
-plot = False
+hu_min 	= 300
+hu_max 	= 2000	
 
+
+# set focus
 xInput = 0
 yInput = 0
-zInput = 30
+zInput = 35
 
 frequency_kHz = 400 # Frequency in kHz
 duration_msec = 0.1 # Pulse Duration in milliseconds
 interval_msec = 20 # Pulse Repetition Interval in milliseconds
 num_modules = 2 # Number of modules in the system
 freq = frequency_kHz*1e3
+
+pulse = Pulse(frequency=frequency_kHz*1e3, duration=duration_msec*1e-3)
+sequence = Sequence(
+    pulse_interval=interval_msec*1e-3,
+    pulse_count=int(60/(interval_msec*1e-3)),
+    pulse_train_interval=0,
+    pulse_train_count=1)
+
+plot = True
 
 here = Path(__file__).parent.resolve()
 db_path = "../{here}/../OpenLIFU_Database_DCVA"
@@ -58,3 +99,86 @@ if plot:
     
 plt.show()
 
+simulation_options = SimulationOptions(
+                        pml_auto=True,
+                        pml_inside=False,
+                        save_to_disk=True,
+                        data_cast='single'
+                    )
+
+target = Point(position=(xInput,yInput,zInput), units="mm")
+
+execution_options = SimulationExecutionOptions(is_gpu_simulation=True)
+
+deg_accuracy = 2
+spacing = 0.5/deg_accuracy
+T0 = 1 / freq
+set_dt = (T0 / 360) * deg_accuracy
+
+sim_setup = SimSetup(spacing=spacing, dt=set_dt, t_end=100e-6)
+focal_pattern = focal_patterns.SinglePoint(target_pressure=300e3)
+apod_method = apod_methods.Uniform()
+delay_method = delay_methods.Direct()
+protocol = Protocol(
+    pulse=pulse,
+    sequence=sequence,
+    focal_pattern=focal_pattern,
+    sim_setup=sim_setup)
+
+pts = protocol.focal_pattern.get_targets(target)
+coords = protocol.sim_setup.get_coords()
+params = protocol.seg_method.ref_params(coords)
+kgrid = get_kgrid(coords)
+
+delays, apod = protocol.beamform(arr=arr, target=pts[0], params=params)
+
+
+amplitude = 1
+cycles = 20
+t = np.arange(0, cycles / freq, kgrid.dt)
+input_signal = amplitude * np.sin(2 * np.pi * freq * t)
+source_mat = arr.calc_output(input_signal, kgrid.dt, delays, apod)
+
+units = [params[dim].attrs['units'] for dim in params.dims]
+scl = getunitconversion(units[0], 'm')
+array_offset =[-float(coord.mean())*scl for coord in params.coords.values()]
+bli_tolerance = 0.05
+upsampling_rate = 1
+karray = get_karray(arr,
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
+
+medium = get_medium(params)
+sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+source = get_source(kgrid, karray, source_mat)
+
+ele_bin = np.zeros([375,375,315])
+
+el_list = karray.get_element_positions()
+least_x = min(el_list[0])
+least_y = min(el_list[1])
+least_z = min(el_list[2])
+
+ele_ordering = np.zeros_like(ele_bin)
+fig = plt.figure(figsize=(12,12))
+ax = fig.add_subplot(projection='3d')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('z')
+for ind in range(len(el_list[0])):
+    ele_pos = [el_list[0][ind],el_list[1][ind],el_list[2][ind]]
+    ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
+    iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
+    iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
+    ix = max(0,min(374,ix))
+    iy = max(0,min(374,iy))
+    iz = max(0,min(314,iz))
+    ele_bin[ix][iy][iz] = 1
+    ele_ordering[ix][iy][iz] = ind
+
+    if plot:
+        ax.scatter(ix,iy,iz)
+        ax.text(ix,iy,iz,'{}'.format(ind+1))
+
+plt.show()
