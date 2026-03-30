@@ -105,7 +105,7 @@ sequence = Sequence(
     pulse_train_count=1)
 
 here = Path(__file__).parent.resolve()
-db_path = here / ".." / "OpenLIFU_Database_DCVA"
+db_path = "../{here}/../OpenLIFU_Database_DCVA"
 
 db = Database(db_path)
 arr = db.load_transducer(f"openlifu_{num_modules}x400_evt1_002")
@@ -121,9 +121,13 @@ simulation_options = SimulationOptions(
 target = Point(position=(xInput,yInput,zInput), units="mm")
 
 execution_options = SimulationExecutionOptions(is_gpu_simulation=True)
-spacing = 0.25
-# spacing = 0.125
-sim_setup = SimSetup(spacing=spacing, dt=2e-8, t_end=100e-6)
+
+deg_accuracy = 2
+spacing = 0.5/deg_accuracy
+T0 = 1 / freq
+set_dt = (T0 / 360) * deg_accuracy
+
+sim_setup = SimSetup(spacing=spacing, dt=set_dt, t_end=100e-6)
 focal_pattern = focal_patterns.SinglePoint(target_pressure=300e3)
 apod_method = apod_methods.Uniform()
 delay_method = delay_methods.Direct()
@@ -303,7 +307,7 @@ if simulate2:
         first_val[order[i]]=np.where(first_val_p>np.mean(first_val_p))[0][0]*kgrid.dt
     # first_val = first_val-min(first_val)
     # delays_tr = delays_tr-min(delays_tr)
-    ## somehow no zero delays even though the minimums are subtracted
+    ## no zero delays even though the minimums are subtracted
     print('reverse sim delays')
     print(delays_tr)
     print('reverse sim first value')

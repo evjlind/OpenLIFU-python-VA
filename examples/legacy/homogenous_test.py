@@ -59,7 +59,7 @@ sequence = Sequence(
     pulse_train_count=1)
 
 here = Path(__file__).parent.resolve()
-db_path = here / ".." / "OpenLIFU_Database_DCVA"
+db_path = "../{here}/../OpenLIFU_Database_DCVA"
 
 db = Database(db_path)
 arr = db.load_transducer(f"openlifu_{num_modules}x400_evt1_002")
@@ -78,8 +78,8 @@ execution_options = SimulationExecutionOptions(is_gpu_simulation=True)
 deg_accuracy = 2
 spacing = 0.5/deg_accuracy
 T0 = 1 / freq
-
 set_dt = (T0 / 360) * deg_accuracy
+
 sim_setup = SimSetup(spacing=spacing, dt=set_dt, t_end=100e-6)
 focal_pattern = focal_patterns.SinglePoint(target_pressure=300e3)
 apod_method = apod_methods.MaxAngle()
