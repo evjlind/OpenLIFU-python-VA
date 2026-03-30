@@ -97,7 +97,6 @@ if plot:
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     
-plt.show()
 
 simulation_options = SimulationOptions(
                         pml_auto=True,

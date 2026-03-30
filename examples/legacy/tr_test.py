@@ -244,8 +244,20 @@ if simulate2:
         plt.colorbar()
     sensor2 = kSensor(record=['p'])
     sensor2.mask = ele_bin
+    # source2 = kSource()
+    # source2.p0 = p0
+    # source2.p_mask = np.zeros((kgrid.Nx,kgrid.Ny,kgrid.Nz))
+    # source2.p_mask[round(kgrid.Nx/2),round(kgrid.Ny/2),round(zInput*kgrid.dz)]=1
+    # rev_sig_t = np.arange(0,0.5/freq,kgrid.dt)
+    # rev_puls = np.sin(2*np.pi*freq*rev_sig_t)
+    # source2.p = np.array([np.concatenate([rev_puls,np.zeros(kgrid.Nt - len(rev_puls))])])
     source2 = kSource()
-    source2.p0 = p0
+    p0[p0!=0] = 1
+    source2.p_mask = p0
+    rev_sig_t = np.arange(0,0.5/freq,kgrid.dt)
+    rev_puls = np.sin(2*np.pi*freq*rev_sig_t)
+    source2.p = np.array([np.concatenate([rev_puls,np.zeros(kgrid.Nt - len(rev_puls))])])
+
     kgrid2 = get_kgrid(coords)
     if use_ct_noise:
         ct_noise = generate_ct_noise(kgrid2)
@@ -293,10 +305,11 @@ if simulate2:
 delays_tr = np.zeros_like(delays)
 first_val = np.zeros_like(delays)
 order = []
-for v in range(1,9):
+
+for v in np.arange(8,0,-1):
     p = (v-1)*8
     q = 120-(v-1)*8
-    order.append([p,q,p+1,q+1,p+2,q+2,p+3,q+3,p+4,q+4,p+5,q+5,p+6,q+6,p+7,q+7])
+    order.append([p+7,p+6,p+5,p+4,p+3,p+2,p+1,p,q+7,q+6,q+5,q+4,q+3,q+2,q+1,q])
 order = np.array(order).flatten()
 
 if simulate2:
@@ -306,6 +319,7 @@ if simulate2:
         first_val_p = abs(sensor_data['p'].T)[i] - min(abs(sensor_data['p'].T[i]))
         first_val[order[i]]=np.where(first_val_p>np.mean(first_val_p))[0][0]*kgrid.dt
     delays_tr = max(delays_tr) - delays_tr
+    first_val = max(first_val) - first_val
     print('reverse sim delays')
     print(delays_tr)
     print('reverse sim first value')
@@ -314,12 +328,12 @@ if simulate2:
     print(delays)
 
 if simulate and simulate2:
+    
     source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
     karray = get_karray(arr,
-                        translation=array_offset,
-                        bli_tolerance=bli_tolerance,
-                        upsampling_rate=upsampling_rate)
-
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
     medium = get_medium(params)
     sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
     source = get_source(kgrid, karray, source_mat)
@@ -354,10 +368,9 @@ if simulate and simulate2:
 if simulate and simulate2:
     source_mat = arr.calc_output(input_signal, kgrid.dt, first_val, apod)
     karray = get_karray(arr,
-                        translation=array_offset,
-                        bli_tolerance=bli_tolerance,
-                        upsampling_rate=upsampling_rate)
-
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
     medium = get_medium(params)
     sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
     source = get_source(kgrid, karray, source_mat)
@@ -392,10 +405,10 @@ if simulate and simulate2:
 if simulate and simulate2 and use_ct_noise:
     source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
     karray = get_karray(arr,
-                        translation=array_offset,
-                        bli_tolerance=bli_tolerance,
-                        upsampling_rate=upsampling_rate)
-
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
+    medium = get_medium(params)
     sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
     source = get_source(kgrid, karray, source_mat)
     output = kspaceFirstOrder3D(kgrid=kgrid,
