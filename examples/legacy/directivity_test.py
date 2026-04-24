@@ -72,7 +72,7 @@ sequence = Sequence(
     pulse_train_count=1)
 
 here = Path(__file__).parent.resolve()
-db_path = here / ".." / "OpenLIFU_Database_DCVA"
+db_path = "../{here}/../OpenLIFU_Database_DCVA"
 
 db = Database(db_path)
 arr = db.load_transducer(f"openlifu_{num_modules}x400_evt1_002")
