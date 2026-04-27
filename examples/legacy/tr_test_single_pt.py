@@ -298,8 +298,8 @@ for i in range(128):
     amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
     delays_tr[order[i]]=phase/freq/(2*np.pi)
     ## different way to obtain delays, first time point sensor registers pulse
-    first_val_p = abs(sensor_data['p'].T)[i] - min(abs(sensor_data['p'].T[i]))
-    first_val[order[i]]=np.where(first_val_p>np.mean(first_val_p))[0][0]*kgrid.dt
+    first_val_p = max(sensor_data['p'].T[i])
+    first_val[order[i]]=np.where((sensor_data['p'].T[i] == first_val_p))[0]*kgrid.dt
 
 # normalize delays
 delays_tr = delays_tr - min(delays_tr)
