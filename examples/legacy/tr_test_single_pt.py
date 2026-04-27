@@ -81,7 +81,7 @@ def generate_ct_noise(kgrid):
 
     return sine_image
 
-# set focus
+
 simulate = True
 plot = True
 simulate2 = True
@@ -173,6 +173,7 @@ least_z = min(el_list[2])
 
 ele_ordering = np.zeros_like(ele_bin)
 fig = plt.figure(figsize=(12,12))
+plt.title('Element Numbering')
 ax = fig.add_subplot(projection='3d')
 
 ax.set_xlabel('x')
@@ -184,6 +185,9 @@ for ind in range(len(el_list[0])):
     ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
     iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
     iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
+    # ix = round((ele_pos[0])/(kgrid.dx))
+    # iy = round((ele_pos[1])/(kgrid.dy))
+    # iz = round((ele_pos[2])/(kgrid.dz))
     ix = max(0,min(374,ix))
     iy = max(0,min(374,iy))
     iz = max(0,min(314,iz))
@@ -220,7 +224,7 @@ if simulate:
     if plot == True:
         plt.figure()
         plt.imshow(p_max[:,round(kgrid.Ny/2),:])
-        plt.title('forward sim')
+        plt.title('forward sim based on direct bf')
         plt.colorbar()
 
 sensor_mask_pos = np.array([el.get_position(units='m') for el in arr.elements]).T*100
@@ -247,7 +251,7 @@ if simulate2:
     source2.p_mask = np.zeros((kgrid.Nx,kgrid.Ny,kgrid.Nz))
     source2.p_mask[ix,iy,iz] = 1
     rev_sig_t = np.arange(0,0.5/freq,kgrid.dt)
-    rev_puls = np.sin(2*np.pi*freq*rev_sig_t)
+    rev_puls = 10*np.sin(2*np.pi*freq*rev_sig_t)
     source2.p = np.array([np.concatenate([rev_puls,np.zeros(kgrid.Nt - len(rev_puls))])])
     kgrid2 = get_kgrid(coords)
     medium2 = get_medium(params)
@@ -277,19 +281,27 @@ delays_tr = np.zeros_like(delays)
 first_val = np.zeros_like(delays)
 order = []
 
+## our current understanding of how the transducer element number maps on to the output order from the python k-wave simulation
+## creates an array which maps element number of simulation output -> element #
+## this should work same way k-wave python does, 
+## see "element numbering" figure (currently y->x->z starting with 0,0,0 )
+
 for v in np.arange(8,0,-1):
     p = (v-1)*8
     q = 120-(v-1)*8
     order.append([p+7,p+6,p+5,p+4,p+3,p+2,p+1,p,q+7,q+6,q+5,q+4,q+3,q+2,q+1,q])
 order = np.array(order).flatten()
 
+print(order)
+
 for i in range(128):
     amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
     delays_tr[order[i]]=phase/freq/(2*np.pi)
+    ## different way to obtain delays, first time point sensor registers pulse
     first_val_p = abs(sensor_data['p'].T)[i] - min(abs(sensor_data['p'].T[i]))
     first_val[order[i]]=np.where(first_val_p>np.mean(first_val_p))[0][0]*kgrid.dt
 
-
+# normalize delays
 delays_tr = delays_tr - min(delays_tr)
 first_val = first_val - min(first_val)
 
@@ -297,12 +309,11 @@ print('reverse sim delays')
 print(delays_tr)
 print('reverse sim first value')
 print(first_val)
-print('original delays')
+print('original delays (direct bf)')
 print(delays)
 
 
-
-if simulate2:
+if simulate and simulate2:
     source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
     karray = get_karray(arr,
                         translation=array_offset,
@@ -339,6 +350,43 @@ if simulate2:
         plt.figure()
         plt.imshow(p_max[:,round(kgrid.Ny/2),:])
         plt.title('forward sim with TR delays')
+        plt.colorbar()
+
+if simulate and simulate2:
+    source_mat = arr.calc_output(input_signal, kgrid.dt, first_val, apod)
+    karray = get_karray(arr,
+                    translation=array_offset,
+                    bli_tolerance=bli_tolerance,
+                    upsampling_rate=upsampling_rate)
+    medium = get_medium(params)
+    sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+    source = get_source(kgrid, karray, source_mat)
+    output = kspaceFirstOrder3D(kgrid=kgrid,
+                                    source=source,
+                                    sensor=sensor,
+                                    medium=medium,
+                                    simulation_options=simulation_options,
+                                    execution_options=execution_options)
+
+    sz = list(params.coords.sizes.values())
+    p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+                            coords=params.coords,
+                            name='p_max',
+                            attrs={'units':'Pa', 'long_name':'PPP'})
+    p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+                            coords=params.coords,
+                            name='p_min',
+                            attrs={'units':'Pa', 'long_name':'PNP'})
+    Z = params['density'].data*params['sound_speed'].data
+    intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+                            coords=params.coords,
+                            name='I',
+                            attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+    ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+    if plot == True:
+        plt.figure()
+        plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+        plt.title('forward sim with first non 0 delays')
         plt.colorbar()
 
 if plot:
