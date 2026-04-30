@@ -188,11 +188,14 @@ for ind in range(len(el_list[0])):
     # ix = round((ele_pos[0])/(kgrid.dx))
     # iy = round((ele_pos[1])/(kgrid.dy))
     # iz = round((ele_pos[2])/(kgrid.dz))
-    ix = max(0,min(374,ix))
-    iy = max(0,min(374,iy))
-    iz = max(0,min(314,iz))
+    # ix = max(0,min(374,ix))
+    # iy = max(0,min(374,iy))
+    # iz = max(0,min(314,iz))
+    ix = max(0,min(kgrid.Nx,ix))
+    iy = max(0,min(kgrid.Ny,iy))
+    iz = max(0,min(kgrid.Nz,iz))
     ele_bin[ix][iy][iz] = 1
-    ele_ordering[ix][iy][iz] = ind
+    ele_ordering[ix][iy][iz] = ind + 1
 
     if plot:
         ax.scatter(ix,iy,iz)
@@ -265,6 +268,10 @@ if simulate2:
         simulation_options=simulation_options,
         execution_options=execution_options
     )
+    pcoords = params.coords.copy()
+    pcoords['t'] = np.arange(0, output['Nt']*kgrid.dt, kgrid.dt)
+    rev_pressure = sensor_data['p'].reshape([kgrid.Nt,128],order='F')
+    # rev_result_dict = xa.DataArray(rev_pressure,coords=[pcoords[dim] for dim in ['t','x','y','z']],attrs={'units':'Pa',})
 
     if plot:
         plt.figure(figsize=(10, 6))
@@ -276,8 +283,18 @@ if simulate2:
         plt.ylabel('Sensor Number')
         plt.title('Recorded Pressure at Boundary Sensors')
         plt.colorbar(label='Pressure (Pa)')
+        plt.figure(figsize=(10, 6))
+        plt.imshow(rev_pressure, aspect='auto', extent=[
+            0, kgrid.Nt * kgrid.dt * 1e6,  # Time in μs
+            0, sensor_data['p'].shape[1]  # Sensor number
+        ])
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Sensor Number')
+        plt.title('Recorded Pressure at Boundary Sensors (Fortran Re-ordered)')
+        plt.colorbar(label='Pressure (Pa)')
 
 delays_tr = np.zeros_like(delays)
+apod_tr = np.zeros_like(delays)
 first_val = np.zeros_like(delays)
 order = []
 
@@ -285,25 +302,39 @@ order = []
 ## creates an array which maps element number of simulation output -> element #
 ## this should work same way k-wave python does, 
 ## see "element numbering" figure (currently y->x->z starting with 0,0,0 )
+## REPLACED WITH ele_ordering.flatten(order='F')
 
-for v in np.arange(8,0,-1):
-    p = (v-1)*8
-    q = 120-(v-1)*8
-    order.append([p+7,p+6,p+5,p+4,p+3,p+2,p+1,p,q+7,q+6,q+5,q+4,q+3,q+2,q+1,q])
-order = np.array(order).flatten()
+# for v in np.arange(8,0,-1):
+#     p = (v-1)*8
+#     q = 120-(v-1)*8
+#     order.append([p+7,p+6,p+5,p+4,p+3,p+2,p+1,p,q+7,q+6,q+5,q+4,q+3,q+2,q+1,q])
+# order = np.array(order).flatten()
 
-print(order)
+# print(order)
+# sensor_data['p'].reshape([sensor_data['Nt'],*sz],order='F')
+ele_ordering = ele_ordering.flatten(order='F')
+ele_ordering = ele_ordering[ele_ordering!=0].astype(int)
+ele_ordering = ele_ordering - 1
+print(ele_ordering)
 
 for i in range(128):
     amp, phase, p_freq = extract_amp_phase(np.squeeze(sensor_data['p'].T[i]),1/kgrid.dt,freq,dim=0)
-    delays_tr[order[i]]=phase/freq/(2*np.pi)
+    # amp, phase, p_freq = extract_amp_phase(np.squeeze(rev_pressure[i]),1/kgrid.dt,freq,dim=0)
+    apod_tr[ele_ordering[i]] = amp
+    # delays_tr[order[i]]=phase/freq/(2*np.pi)
+    delays_tr[ele_ordering[i]] = phase/freq/(2*np.pi)
+    # delays_tr[i] = phase/freq/(2*np.pi)
     ## different way to obtain delays, first time point sensor registers pulse
+    # first_val_p = max(sensor_data['p'].T[i])
     first_val_p = max(sensor_data['p'].T[i])
-    first_val[order[i]]=np.where((sensor_data['p'].T[i] == first_val_p))[0]*kgrid.dt
+    # first_val[order[i]]=np.where((sensor_data['p'].T[i] == first_val_p))[0]*kgrid.dt
+    # first_val[i]=np.where((rev_pressure[i] == first_val_p))[0]*kgrid.dt
+    first_val[ele_ordering[i]]=np.where((sensor_data['p'].T[i] == first_val_p))[0]*kgrid.dt
 
 # normalize delays
 delays_tr = delays_tr - min(delays_tr)
 first_val = first_val - min(first_val)
+apod_tr = apod_tr/max(apod_tr)
 
 print('reverse sim delays')
 print(delays_tr)
@@ -312,9 +343,8 @@ print(first_val)
 print('original delays (direct bf)')
 print(delays)
 
-
 if simulate and simulate2:
-    source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod)
+    source_mat = arr.calc_output(input_signal, kgrid.dt, delays_tr, apod_tr)
     karray = get_karray(arr,
                         translation=array_offset,
                         bli_tolerance=bli_tolerance,
@@ -352,42 +382,42 @@ if simulate and simulate2:
         plt.title('forward sim with TR delays')
         plt.colorbar()
 
-if simulate and simulate2:
-    source_mat = arr.calc_output(input_signal, kgrid.dt, first_val, apod)
-    karray = get_karray(arr,
-                    translation=array_offset,
-                    bli_tolerance=bli_tolerance,
-                    upsampling_rate=upsampling_rate)
-    medium = get_medium(params)
-    sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
-    source = get_source(kgrid, karray, source_mat)
-    output = kspaceFirstOrder3D(kgrid=kgrid,
-                                    source=source,
-                                    sensor=sensor,
-                                    medium=medium,
-                                    simulation_options=simulation_options,
-                                    execution_options=execution_options)
+# if simulate and simulate2:
+#     source_mat = arr.calc_output(input_signal, kgrid.dt, first_val, apod)
+#     karray = get_karray(arr,
+#                     translation=array_offset,
+#                     bli_tolerance=bli_tolerance,
+#                     upsampling_rate=upsampling_rate)
+#     medium = get_medium(params)
+#     sensor = get_sensor(kgrid, record=['p_max', 'p_min'])
+#     source = get_source(kgrid, karray, source_mat)
+#     output = kspaceFirstOrder3D(kgrid=kgrid,
+#                                     source=source,
+#                                     sensor=sensor,
+#                                     medium=medium,
+#                                     simulation_options=simulation_options,
+#                                     execution_options=execution_options)
 
-    sz = list(params.coords.sizes.values())
-    p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
-                            coords=params.coords,
-                            name='p_max',
-                            attrs={'units':'Pa', 'long_name':'PPP'})
-    p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
-                            coords=params.coords,
-                            name='p_min',
-                            attrs={'units':'Pa', 'long_name':'PNP'})
-    Z = params['density'].data*params['sound_speed'].data
-    intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
-                            coords=params.coords,
-                            name='I',
-                            attrs={'units':'W/cm^2', 'long_name':'Intensity'})
-    ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
-    if plot == True:
-        plt.figure()
-        plt.imshow(p_max[:,round(kgrid.Ny/2),:])
-        plt.title('forward sim with first non 0 delays')
-        plt.colorbar()
+#     sz = list(params.coords.sizes.values())
+#     p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+#                             coords=params.coords,
+#                             name='p_max',
+#                             attrs={'units':'Pa', 'long_name':'PPP'})
+#     p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+#                             coords=params.coords,
+#                             name='p_min',
+#                             attrs={'units':'Pa', 'long_name':'PNP'})
+#     Z = params['density'].data*params['sound_speed'].data
+#     intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+#                             coords=params.coords,
+#                             name='I',
+#                             attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+#     ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+#     if plot == True:
+#         plt.figure()
+#         plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+#         plt.title('forward sim with first non 0 delays')
+#         plt.colorbar()
 
 if plot:
     plt.show()
