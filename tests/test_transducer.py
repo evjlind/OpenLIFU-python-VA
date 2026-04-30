@@ -7,6 +7,11 @@ import pytest
 from helpers import dataclasses_are_equal
 
 from openlifu.xdc import Element, Transducer, TransducerArray
+from openlifu.xdc.transducerarray import (
+    get_angle_from_gap,
+    get_gap_from_angle,
+    get_roc_from_angle,
+)
 
 
 @pytest.fixture()
@@ -105,6 +110,288 @@ def test_transducer_array_to_transducer_data_types(transducer_array_id):
     transducer_array : TransducerArray = load_transducer_array(transducer_array_id)
     transducer = transducer_array.to_transducer()
     assert isinstance(transducer.standoff_transform, np.ndarray)
-    assert isinstance(transducer.impulse_response, np.ndarray)
+    assert not hasattr(transducer, "impulse_response")
+    assert not hasattr(transducer, "impulse_dt")
     if len(transducer.elements) > 0:
         assert isinstance(transducer.elements[0], Element)
+
+
+def test_transducer_calc_output_interpolates_dictionary_sensitivity():
+    transducer = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 1.0), (300e3, 3.0)],
+    )
+    transducer.elements[0].sensitivity = 1.0
+    cycles = 3
+    dt = 1e-7
+
+    output_mid = transducer.calc_output(cycles=cycles, frequency=200e3, dt=dt)
+    output_low = transducer.calc_output(cycles=cycles, frequency=100e3, dt=dt)
+
+    n_samples_mid = int(np.round(cycles / (200e3 * dt)))
+    n_samples_low = int(np.round(cycles / (100e3 * dt)))
+    t_mid = np.arange(n_samples_mid) * dt
+    t_low = np.arange(n_samples_low) * dt
+    expected_mid = 2.0 * np.sin(2 * np.pi * 200e3 * t_mid)
+    expected_low = 1.0 * np.sin(2 * np.pi * 100e3 * t_low)
+
+    np.testing.assert_allclose(output_mid[0], expected_mid)
+    np.testing.assert_allclose(output_low[0], expected_low)
+
+
+def test_element_calc_output_generates_signal_from_scalar_input():
+    element = Element(sensitivity=2.0)
+    cycles = 4
+    frequency = 100e3
+    dt = 1e-7
+    n_samples = int(np.round(cycles / (frequency * dt)))
+
+    output = element.calc_output(cycles=cycles, frequency=frequency, dt=dt, amplitude=3.0)
+    t = np.arange(n_samples) * dt
+    expected = 2.0 * 3.0 * np.sin(2 * np.pi * frequency * t)
+
+    np.testing.assert_allclose(output, expected)
+
+
+def test_element_calc_output_enforces_cycles_duration_for_generated_signal():
+    element = Element(sensitivity=1.0)
+    cycles = 1
+    frequency = 200e3
+    dt = 1e-6
+    n_samples = int(np.round(cycles / (frequency * dt)))
+    output = element.calc_output(cycles=cycles, frequency=frequency, dt=dt)
+    t = np.arange(n_samples) * dt
+    expected = np.sin(2 * np.pi * frequency * t)
+
+    assert len(output) == n_samples
+    np.testing.assert_allclose(output, expected)
+
+
+def test_merge_pushes_transducer_sensitivity_into_elements():
+    transducer_a = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 2.0), (300e3, 4.0)],
+    )
+    transducer_b = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 3.0), (300e3, 6.0)],
+    )
+    transducer_a.elements[0].sensitivity = 5.0
+    transducer_b.elements[0].sensitivity = 7.0
+
+    merged = Transducer.merge([transducer_a, transducer_b], merge_mismatched_sensitivity=True)
+
+    assert merged.sensitivity == 1.0
+    assert merged.elements[0].sensitivity == [(100e3, 10.0),(300e3, 20.0)]
+    assert merged.elements[1].sensitivity == [(100e3, 21.0),(300e3, 42.0)]
+
+
+def test_merge_rejects_mismatched_sensitivity_keys():
+    transducer_a = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 2.0), (300e3, 4.0)],
+    )
+    transducer_b = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 2.0), (300e3, 4.0)],
+    )
+    transducer_a.elements[0].sensitivity = [(100e3, 5.0), (300e3, 7.0)]
+    transducer_b.elements[0].sensitivity = [(100e3, 11.0), (400e3, 13.0)]
+
+    with pytest.raises(ValueError, match="different frequency keys"):
+        Transducer.merge([transducer_a, transducer_b], merge_mismatched_sensitivity=True)
+
+
+@pytest.mark.parametrize(
+    ("width", "dth", "roc"),
+    [
+        (8.0, 0.08, 25.0),
+        (10.0, 0.12, 30.0),
+        (12.0, 0.18, 45.0),
+    ],
+)
+def test_concave_geometry_helpers_are_mutual_inverses(width: float, dth: float, roc: float):
+    gap = get_gap_from_angle(width, dth, roc)
+    recovered_roc = get_roc_from_angle(width, gap, dth)
+    recovered_dth = get_angle_from_gap(width, gap, roc)
+    recovered_gap = get_gap_from_angle(width, recovered_dth, roc)
+
+    assert np.isclose(recovered_roc, roc)
+    assert np.isclose(recovered_dth, dth)
+    assert np.isclose(recovered_gap, gap)
+
+
+def test_get_concave_cylinder_computes_gap_from_dth_and_roc_layout_spacing():
+    base = Transducer.gen_matrix_array(nx=1, ny=1, units="mm")
+    width = 8.0
+    dth = 0.12
+    roc = 25.0
+    array = TransducerArray.get_concave_cylinder(
+        base,
+        rows=2,
+        cols=1,
+        width=width,
+        dth=dth,
+        roc=roc,
+        units="mm",
+    )
+    merged = array.to_transducer()
+    positions = merged.get_positions(units="mm")
+
+    expected_gap = get_gap_from_angle(width, dth, roc)
+    y_spacing = np.abs(positions[1, 1] - positions[0, 1])
+
+    assert np.isclose(y_spacing, width + expected_gap)
+
+
+def test_get_concave_cylinder_handles_zero_dth_without_roc():
+    base = Transducer.gen_matrix_array(nx=1, ny=1, units="mm")
+    width = 10.0
+    gap = 2.0
+    array = TransducerArray.get_concave_cylinder(
+        base,
+        rows=1,
+        cols=2,
+        width=width,
+        gap=gap,
+        dth=0.0,
+        units="mm",
+    )
+    merged = array.to_transducer()
+    positions = merged.get_positions(units="mm")
+
+    x_spacing = np.abs(positions[1, 0] - positions[0, 0])
+    z_values = positions[:, 2]
+
+    assert np.isclose(x_spacing, width + gap)
+    np.testing.assert_allclose(z_values, np.zeros_like(z_values))
+
+
+def test_get_concave_cylinder_rejects_gap_dth_roc_together():
+    base = Transducer.gen_matrix_array(nx=1, ny=1, units="mm")
+    with pytest.raises(ValueError, match="cannot specify all of gap, dth, and roc"):
+        TransducerArray.get_concave_cylinder(
+            base,
+            rows=1,
+            cols=2,
+            width=10.0,
+            gap=1.0,
+            dth=0.2,
+            roc=20.0,
+            units="mm",
+        )
+
+
+def test_transducer_calc_output_combines_frequency_dependent_sensitivities():
+    transducer = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 2.0), (300e3, 4.0)],
+    )
+    transducer.elements[0].sensitivity = [(100e3, 5.0), (300e3, 9.0)]
+
+    frequency = 200e3
+    dt = 1e-7
+    cycles = 3
+    n_samples = int(np.round(cycles / (frequency * dt)))
+    t = np.arange(n_samples) * dt
+    expected_drive = np.sin(2 * np.pi * frequency * t)
+
+    output = transducer.calc_output(cycles=cycles, frequency=frequency, dt=dt)
+
+    np.testing.assert_allclose(output[0], 21.0 * expected_drive)
+
+
+def test_transducer_array_to_transducer_preserves_frequency_dependent_sensitivities():
+    transducer_a = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 2.0), (300e3, 4.0)],
+    )
+    transducer_b = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 1.0), (300e3, 3.0)],
+    )
+    transducer_a.elements[0].sensitivity = 5.0
+    transducer_b.elements[0].sensitivity = 7.0
+
+    array = TransducerArray.get_concave_cylinder(
+        [transducer_a, transducer_b],
+        rows=1,
+        cols=2,
+        width=10.0,
+        gap=0.0,
+        units="mm",
+    )
+    merged = array.to_transducer()
+
+    frequency = 200e3
+    dt = 1e-7
+    cycles = 2
+    n_samples = int(np.round(cycles / (frequency * dt)))
+    t = np.arange(n_samples) * dt
+    expected_drive = np.sin(2 * np.pi * frequency * t)
+
+    output = merged.calc_output(cycles=cycles, frequency=frequency, dt=dt)
+
+    np.testing.assert_allclose(output[0], 15.0 * expected_drive)
+    np.testing.assert_allclose(output[1], 14.0 * expected_drive)
+
+
+def test_element_sensitivity_from_json_is_list_of_tuples():
+    """Sensitivity read from a JSON dict (list-of-lists) is converted to List[tuple[float, float]]."""
+    d = {
+        "index": 1,
+        "position": [0.0, 0.0, 0.0],
+        "orientation": [0.0, 0.0, 0.0],
+        "size": [1.0, 1.0],
+        "pin": 1,
+        "units": "mm",
+        "sensitivity": [[100e3, 1.0], [300e3, 3.0]],  # JSON encodes tuples as lists
+    }
+    element = Element.from_dict(d)
+    assert isinstance(element.sensitivity, list)
+    assert all(isinstance(pair, tuple) for pair in element.sensitivity)
+    assert all(isinstance(f, float) and isinstance(v, float) for f, v in element.sensitivity)
+    assert element.sensitivity == [(100e3, 1.0), (300e3, 3.0)]
+
+
+def test_transducer_sensitivity_from_json_is_list_of_tuples():
+    """Transducer-level sensitivity survives a to_json/from_json round-trip as List[tuple[float, float]]."""
+    transducer = Transducer.gen_matrix_array(
+        nx=1,
+        ny=1,
+        units="mm",
+        sensitivity=[(100e3, 2.0), (300e3, 4.0)],
+    )
+    reconstructed = Transducer.from_json(transducer.to_json())
+    assert isinstance(reconstructed.sensitivity, list)
+    assert all(isinstance(pair, tuple) for pair in reconstructed.sensitivity)
+    assert all(isinstance(f, float) and isinstance(v, float) for f, v in reconstructed.sensitivity)
+    assert reconstructed.sensitivity == [(100e3, 2.0), (300e3, 4.0)]
+
+
+def test_element_in_transducer_sensitivity_from_json_is_list_of_tuples():
+    """Element-level sensitivity inside a Transducer survives a to_json/from_json round-trip as List[tuple[float, float]]."""
+    transducer = Transducer.gen_matrix_array(nx=1, ny=1, units="mm")
+    transducer.elements[0].sensitivity = [(100e3, 5.0), (300e3, 9.0)]
+    reconstructed = Transducer.from_json(transducer.to_json())
+    el_sensitivity = reconstructed.elements[0].sensitivity
+    assert isinstance(el_sensitivity, list)
+    assert all(isinstance(pair, tuple) for pair in el_sensitivity)
+    assert all(isinstance(f, float) and isinstance(v, float) for f, v in el_sensitivity)
+    assert el_sensitivity == [(100e3, 5.0), (300e3, 9.0)]

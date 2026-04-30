@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -21,12 +22,16 @@ from openlifu.plan.solution_analysis import (
     find_centroid,
     get_beamwidth,
     get_mask,
+    model_tx_temperature_rise,
 )
+from openlifu.sim import SimSetup, run_simulation
 from openlifu.util.annotations import OpenLIFUFieldData
+from openlifu.util.checkgpu import gpu_available
 from openlifu.util.json import PYFUSEncoder
 from openlifu.util.units import getunitconversion, rescale_coords, rescale_data_arr
 from openlifu.xdc import Transducer
 
+logger = logging.getLogger(__name__)
 
 def _construct_nc_filepath_from_json_filepath(json_filepath:Path) -> Path:
     """Construct a default filepath to netCDF file given filepath to associated solution json file."""
@@ -98,6 +103,7 @@ class Solution:
     kind of confirmation that the solution is safe and acceptable to be executed."""
 
     def __post_init__(self):
+        self.logger = logging.getLogger(__name__)
         if self.delays is not None:
             self.delays = np.array(self.delays, ndmin=2)
         if self.apodizations is not None:
@@ -132,12 +138,68 @@ class Solution:
         """Get the number of foci"""
         return len(self.foci)
 
+    def simulate(self,
+        params: xa.Dataset,
+        sim_options: SimSetup | None = None,
+        _force_cpu: bool = False) -> xa.Dataset:
+        """Run a simulation for this solution and store the result in the `simulation_result` attribute.
+
+        Args:
+            params: The simulation parameters as an xarray Dataset.
+            sim_options: Optional simulation setup options.
+            _force_cpu: Whether to force the simulation to run on the CPU. If True, the GPU will not be used even if available.
+
+        Returns:
+            The simulation result as an xarray Dataset.
+        """
+
+        if _force_cpu:
+            use_gpu = False
+        else:
+            use_gpu = gpu_available()
+
+        if sim_options is None:
+            sim_options = SimSetup()
+        simulation_outputs_to_stack: List[xa.Dataset] = []
+        simulation_cycles = np.round(self.pulse.duration * self.pulse.frequency)
+        for focidx, focus in enumerate(self.foci):
+            delays = self.delays[focidx, :]
+            apodization = self.apodizations[focidx, :]
+            simulation_output_xarray = None
+            self.logger.info(f"Running k-Wave simulation for focus {focus}...")
+            run_simulation_kwargs = {
+                    "arr": self.transducer,
+                    "params": params,
+                    "delays": delays,
+                    "apod": apodization,
+                    "freq": self.pulse.frequency,
+                    "cycles": simulation_cycles,
+                    "dt": sim_options.dt,
+                    "t_end": sim_options.t_end,
+                    "cfl": sim_options.cfl,
+                    "amplitude": self.pulse.amplitude * self.voltage,
+                    "gpu": use_gpu
+                }
+            run_simulation_kwargs.update(sim_options.options)
+            simulation_output_xarray = run_simulation(
+                **run_simulation_kwargs)
+            simulation_outputs_to_stack.append(simulation_output_xarray)
+        return xa.concat(
+            [
+                sim.assign_coords(focal_point_index=i)
+                for i, sim in enumerate(simulation_outputs_to_stack)
+            ],
+            dim='focal_point_index',
+        )
+
     def analyze(self,
+                simulation_result: xa.Dataset | None = None,
                 options: SolutionAnalysisOptions = SolutionAnalysisOptions(),
                 param_constraints: Dict[str,ParameterConstraint] | None = None) -> SolutionAnalysis:
         """Analyzes the treatment solution.
 
         Args:
+            simulation_result: The simulation result dataset to analyze. If None, uses self.simulation_result.
             options: A struct for solution analysis options.
             param_constraints: A dictionary of parameter constraints to apply to the analysis.
                 The keys are the parameter names and the values are the ParameterConstraint objects.
@@ -152,8 +214,13 @@ class Solution:
         t = self.pulse.calc_time(dt)
         input_signal_V = self.pulse.calc_pulse(t) * self.voltage
 
-        pnp_MPa_all = rescale_data_arr(rescale_coords(self.simulation_result['p_min'], options.distance_units),"MPa")
-        ipa_Wcm2_all = rescale_data_arr(rescale_coords(self.simulation_result['intensity'], options.distance_units), "W/cm^2")
+        if simulation_result is None:
+            if self.simulation_result is None or len(self.simulation_result)==0:
+                raise ValueError("No simulation result provided for analysis, and no simulation result found in the Solution.")
+            simulation_result = self.simulation_result
+
+        pnp_MPa_all = rescale_data_arr(rescale_coords(simulation_result['p_min'], options.distance_units),"MPa")
+        ipa_Wcm2_all = rescale_data_arr(rescale_coords(simulation_result['intensity'], options.distance_units), "W/cm^2")
 
         if options.sidelobe_radius is np.nan:
             options.sidelobe_radius = options.mainlobe_radius
@@ -174,7 +241,7 @@ class Solution:
             solution_analysis.sequence_duration_s = float(self.sequence.pulse_interval * self.sequence.pulse_count * self.sequence.pulse_train_count)
         else:
             solution_analysis.sequence_duration_s = float(self.sequence.pulse_train_interval * self.sequence.pulse_train_count)
-        ita_mWcm2 = rescale_coords(self.get_ita(units="mW/cm^2"), options.distance_units)
+        ita_mWcm2 = rescale_coords(self.get_ita(intensity=simulation_result['intensity'], units="mW/cm^2"), options.distance_units)
 
         power_W = np.zeros(self.num_foci())
         TIC = np.zeros(self.num_foci())
@@ -189,8 +256,14 @@ class Solution:
             apodization = self.apodizations[focus_index]
             origin = self.transducer.get_effective_origin(apodizations=apodization, units=options.distance_units)
 
-            output_signal_Pa = self.transducer.calc_output(input_signal_V, dt, delays=self.delays[focus_index, :], apod=self.apodizations[focus_index, :])
-            p0_Pa = np.max(output_signal_Pa, axis=1)
+            p0_Pa = np.max(self.transducer.calc_output(
+                cycles=1,
+                frequency=self.pulse.frequency,
+                dt=dt,
+                delays=self.delays[focus_index, :],
+                apod=self.apodizations[focus_index, :],
+                amplitude=self.pulse.amplitude * self.voltage,
+            ), axis=1)
 
             mainlobe_mask = get_mask(
                 pnp_MPa,
@@ -221,6 +294,7 @@ class Solution:
             solution_analysis.focal_centroid_ax_mm += [mainlobe_focus[2]]
 
             solution_analysis.mainlobe_pnp_MPa += [pk]
+            solution_analysis.focal_gain += [pk*1e6/np.max(p0_Pa)]
 
             for dim, named_dim, scale in zip(pnp_MPa.dims, ("lat","ele","ax"), options.mainlobe_aspect_ratio):
                 for threshdB in [3, 6]:
@@ -276,9 +350,44 @@ class Solution:
         solution_analysis.TIC = np.mean(TIC)
         solution_analysis.voltage_V = self.voltage
         solution_analysis.power_W = np.mean(power_W)
-
+        solution_analysis.estimated_tx_temperature_rise_C = self.estimate_tx_temperature_rise(
+            t_sec=solution_analysis.sequence_duration_s,
+        )
         solution_analysis.param_constraints = param_constraints
         return solution_analysis
+
+    def estimate_tx_temperature_rise(self,
+                                  t_sec: float,
+                                  T0_degC: float = 30.0):
+
+        """
+        Standalone temperature prediction function for thermal modeling.
+
+        Based on physics-based power decay gradient model fitted from experimental data.
+        Model: dT/dt = (t + t_shift)^(-n) + C
+
+        Parameters:
+        -----------
+        self: Solution
+            The treatment solution containing voltage and pulse information.
+        t_sec: float
+            Time in seconds for which to predict temperature rise.
+        T0_degC: float
+            Initial temperature in Celsius. Default is 30.0°C.
+
+        Returns:
+        --------
+        float
+            Predicted temperature rise in Celsius
+        """
+        return model_tx_temperature_rise(
+            voltage=self.voltage,
+            t_sec=t_sec,
+            duty_cycle=self.get_sequence_dutycycle(),
+            apodization_fraction=np.mean(self.apodizations),
+            frequency_kHz=self.pulse.frequency / 1e3,
+            T0_degC=T0_degC,
+        )
 
     def compute_scaling_factors(
             self,
@@ -362,19 +471,24 @@ class Solution:
         sequence_duty_cycle = self.get_pulsetrain_dutycycle() * between_pulsetrain_duty_cycle
         return sequence_duty_cycle
 
-    def get_ita(self, units: str = "mW/cm^2") -> xa.DataArray:
+    def get_ita(self, intensity: xa.DataArray | None = None, units: str = "mW/cm^2") -> xa.DataArray:
         """
         Calculate the intensity-time-area product for a treatment solution.
 
         Args:
-            output: A struct for simulation results from the treatment.
+            intensity: xa.DataArray | None
+                If provided, use this intensity data array instead of the one from the simulation result.
             units: str
                 Target units. Default "mW/cm^2".
 
         Returns:
-            A Solution instance with the calculated intensity value.
+            xa.DataArray
+                The intensity-time-area product as an xarray DataArray.
         """
-        intensity_scaled = rescale_data_arr(self.simulation_result['intensity'], units)
+        if intensity is not None:
+            intensity_scaled = rescale_data_arr(intensity, units)
+        else:
+            intensity_scaled = rescale_data_arr(self.simulation_result['intensity'], units)
         pulsetrain_dutycycle = self.get_pulsetrain_dutycycle()
         treatment_dutycycle = self.get_sequence_dutycycle()
         pulse_seq = (np.arange(self.sequence.pulse_count) - 1) % self.num_foci() + 1
@@ -397,6 +511,8 @@ class Solution:
         Returns: A dictionary representing the complete Solution object.
         """
         solution_dict = asdict(self)
+        if 'logger' in solution_dict:
+            solution_dict.pop('logger')
 
         if not include_simulation_data:
             solution_dict.pop('simulation_result')
