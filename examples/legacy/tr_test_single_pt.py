@@ -104,11 +104,13 @@ sequence = Sequence(
     pulse_train_interval=0,
     pulse_train_count=1)
 
-here = Path(__file__).parent.resolve()
-db_path = "../{here}/../OpenLIFU_Database_DCVA"
+
+## change this path to fit your system
+db_path = "/home/leelab/Desktop/Code/OpenLIFU-python-VA/OpenLIFU_Database_DCVA"
 
 db = Database(db_path)
 arr = db.load_transducer(f"openlifu_{num_modules}x400_evt1_002")
+# arr = db.load_transducer(f"openlifu_{num_modules}x400_evt1")
 arr.sort_by_pin()
 
 simulation_options = SimulationOptions(
@@ -153,7 +155,7 @@ units = [params[dim].attrs['units'] for dim in params.dims]
 scl = getunitconversion(units[0], 'm')
 array_offset =[-float(coord.mean())*scl for coord in params.coords.values()]
 bli_tolerance = 0.05
-upsampling_rate = 1
+upsampling_rate = 5
 karray = get_karray(arr,
                     translation=array_offset,
                     bli_tolerance=bli_tolerance,
@@ -169,7 +171,7 @@ el_list = karray.get_element_positions()
 least_x = min(el_list[0])
 least_y = min(el_list[1])
 least_z = min(el_list[2])
-
+print((least_x,least_y,least_z))
 ele_ordering = np.zeros_like(ele_bin)
 fig = plt.figure(figsize=(12,12))
 plt.title('Element Numbering')
@@ -184,12 +186,6 @@ for ind in range(len(el_list[0])):
     ix = round((ele_pos[0]+abs(least_x))/(kgrid.dx))
     iy = round((ele_pos[1]+abs(least_y))/(kgrid.dy))
     iz = round((ele_pos[2]+abs(least_z))/(kgrid.dz))
-    # ix = round((ele_pos[0])/(kgrid.dx))
-    # iy = round((ele_pos[1])/(kgrid.dy))
-    # iz = round((ele_pos[2])/(kgrid.dz))
-    # ix = max(0,min(374,ix))
-    # iy = max(0,min(374,iy))
-    # iz = max(0,min(314,iz))
     ix = max(0,min(kgrid.Nx-1,ix))
     iy = max(0,min(kgrid.Ny-1,iy))
     iz = max(0,min(kgrid.Nz-1,iz))
@@ -244,17 +240,10 @@ if simulate2:
     sensor2 = kSensor(record=['p'])
     sensor2.mask = ele_bin
     source2 = kSource()
-    # ix = round((xInput+(1e3*kgrid.dx*(kgrid.Nx/2))/(1e3*kgrid.dx)))
-    # iy = round((yInput+(1e3*kgrid.dy*(kgrid.Ny/2))/(1e3*kgrid.dy)))
-    ix = round(kgrid.Nx/2)
-    iy = round(kgrid.Ny/2)
-    iz = round(zInput/(1e3*kgrid.dz))
-    ix = max(0,min(kgrid.Nx-1,ix))
-    iy = max(0,min(kgrid.Ny-1,iy))
-    iz = max(0,min(kgrid.Nz-1,iz))
-    print((ix,iy,iz))
-    print((kgrid.Nx,kgrid.Ny,kgrid.Nz))
     source2.p_mask = np.zeros((kgrid.Nx,kgrid.Ny,kgrid.Nz))
+    ix = round((xInput/1e3+abs(least_x))/(kgrid.dx))
+    iy = round((yInput/1e3+abs(least_y))/(kgrid.dy))
+    iz = round((zInput/1e3+abs(least_z)/kgrid.dz))
     source2.p_mask[ix,iy,iz] = 1
     n_samples = max(1, int(np.round(0.5 / (freq * kgrid.dt))))
     t = np.arange(n_samples, dtype=np.float64) * kgrid.dt
@@ -290,23 +279,7 @@ if simulate2:
 delays_tr = np.zeros_like(delays)
 apod_tr = np.zeros_like(delays)
 first_val = np.zeros_like(delays)
-# order = []
 
-## our current understanding of how the transducer element number maps on to the output order from the python k-wave simulation
-## creates an array which maps element number of simulation output -> element #
-## this should work same way k-wave python does, 
-## see "element numbering" figure (currently y->x->z starting with 0,0,0 )
-
-# for v in np.arange(8,0,-1):
-#     p = (v-1)*8
-#     q = 120-(v-1)*8
-#     order.append([p+7,p+6,p+5,p+4,p+3,p+2,p+1,p,q+7,q+6,q+5,q+4,q+3,q+2,q+1,q])
-# order = np.array(order).flatten()
-
-## replaced with ele_ordering.flatten(order='F') above, removing 0s
-
-# print(order)
-# sensor_data['p'].reshape([sensor_data['Nt'],*sz],order='F')
 ele_ordering = ele_ordering.flatten(order='F')
 ele_ordering = ele_ordering[ele_ordering!=0].astype(int)
 ele_ordering = ele_ordering - 1
@@ -376,43 +349,43 @@ if simulate and simulate2:
         plt.title('forward sim with TR delays')
         plt.colorbar()
 
-if simulate and simulate2:
-    source_mat = arr.calc_output(cycles=1, frequency=freq, dt=kgrid.dt, delays=first_val, apod=apod)
-    karray = get_karray(arr,
-                    translation=array_offset,
-                    bli_tolerance=bli_tolerance,
-                    upsampling_rate=upsampling_rate)
-    medium4 = get_medium(params)
-    sensor4 = get_sensor(kgrid, record=['p_max', 'p_min'])
-    source4 = get_source(kgrid, karray, source_mat)
-    kgrid4 = get_kgrid(coords)
-    output = kspaceFirstOrder3D(kgrid=kgrid4,
-                                    source=source4,
-                                    sensor=sensor4,
-                                    medium=medium4,
-                                    simulation_options=simulation_options,
-                                    execution_options=execution_options)
+# if simulate and simulate2:
+#     source_mat = arr.calc_output(cycles=1, frequency=freq, dt=kgrid.dt, delays=first_val, apod=apod)
+#     karray = get_karray(arr,
+#                     translation=array_offset,
+#                     bli_tolerance=bli_tolerance,
+#                     upsampling_rate=upsampling_rate)
+#     medium4 = get_medium(params)
+#     sensor4 = get_sensor(kgrid, record=['p_max', 'p_min'])
+#     source4 = get_source(kgrid, karray, source_mat)
+#     kgrid4 = get_kgrid(coords)
+#     output = kspaceFirstOrder3D(kgrid=kgrid4,
+#                                     source=source4,
+#                                     sensor=sensor4,
+#                                     medium=medium4,
+#                                     simulation_options=simulation_options,
+#                                     execution_options=execution_options)
 
-    sz = list(params.coords.sizes.values())
-    p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
-                            coords=params.coords,
-                            name='p_max',
-                            attrs={'units':'Pa', 'long_name':'PPP'})
-    p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
-                            coords=params.coords,
-                            name='p_min',
-                            attrs={'units':'Pa', 'long_name':'PNP'})
-    Z = params['density'].data*params['sound_speed'].data
-    intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
-                            coords=params.coords,
-                            name='I',
-                            attrs={'units':'W/cm^2', 'long_name':'Intensity'})
-    ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
-    if plot == True:
-        plt.figure()
-        plt.imshow(p_max[:,round(kgrid.Ny/2),:])
-        plt.title('forward sim with first non 0 delays')
-        plt.colorbar()
+#     sz = list(params.coords.sizes.values())
+#     p_max = xa.DataArray(output['p_max'].reshape(sz, order='F'),
+#                             coords=params.coords,
+#                             name='p_max',
+#                             attrs={'units':'Pa', 'long_name':'PPP'})
+#     p_min = xa.DataArray(-1*output['p_min'].reshape(sz, order='F'),
+#                             coords=params.coords,
+#                             name='p_min',
+#                             attrs={'units':'Pa', 'long_name':'PNP'})
+#     Z = params['density'].data*params['sound_speed'].data
+#     intensity = xa.DataArray(1e-4*output['p_min'].reshape(sz, order='F')**2/(2*Z),
+#                             coords=params.coords,
+#                             name='I',
+#                             attrs={'units':'W/cm^2', 'long_name':'Intensity'})
+#     ds = xa.Dataset({'p_max':p_max, 'p_min':p_min, 'intensity':intensity})
+#     if plot == True:
+#         plt.figure()
+#         plt.imshow(p_max[:,round(kgrid.Ny/2),:])
+#         plt.title('forward sim with first non 0 delays')
+#         plt.colorbar()
 
 if plot:
     plt.show()
