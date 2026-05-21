@@ -48,10 +48,10 @@ alpha_coeff_max     = 8.7      # [dB/(MHz cm)] Fry 1978 at 0.5MHz: 1 Np/cm (8.7 
 hu_min 	= 300
 hu_max 	= 2000	
 
-def find_nearest(array, value):
-    array = np.asarray(array)
-    idx = (np.abs(array - value)).argmin()
-    return idx
+# def find_nearest(array, value):
+#     array = np.asarray(array)
+#     idx = (np.abs(array - value)).argmin()
+#     return idx
 
 def generate_ct_noise(kgrid):
     hu_max 	= 2000
